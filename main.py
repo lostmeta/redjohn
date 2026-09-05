@@ -1,7 +1,11 @@
 import os
-from build import build
+from build import build 
+import sys
+from select import select
+import queue
+from src.modules.http_listener import NOTIFY_QUEUE
 from src.modules.database import init_db, get_active_sessions
-from src.modules.session_manager import start_reverse_handler, connect_to_bind_shell, interact_with_session
+from src.modules.session_manager import start_reverse_handler, connect_to_bind_shell, interact_with_session,start_http_handler
 #banner = """
 #  _           _   ___      _     _ _   
 # | |   ___ __| |_/ __|_ __| |___(_) |_ 
@@ -36,9 +40,10 @@ banner = """
 print(banner)
 init_db()
 current_module = None
-modules = {"unix/bindshell_tcp": {"date": "08.08.2026","description": "TCP bind shell","template": "src/templates/template_unix_bindshell.py","type": "bind"},
-           "unix/revshell_tcp": {"date": "08.08.2026","description": "TCP reverse shell","template": "src/templates/template_unix_revshell.py","type": "reverse"},
-           "win/bindshell_tcp": {"date": "29.08.2026","description": "TCP bind shell","template": "src/templates/template_win_bindshell.py","type": "bind"}
+modules = {"unix/bindshell_tcp": {"date": "08.08.2026","description": "TCP bind shell","template": "src/templates/template_unix_bindshell.py","type": "bind","type_conn": "tcp"},
+           "unix/revshell_tcp": {"date": "08.08.2026","description": "TCP reverse shell","template": "src/templates/template_unix_revshell.py","type": "reverse","type_conn": "tcp"},
+           "win/bindshell_tcp": {"date": "29.08.2026","description": "TCP bind shell","template": "src/templates/template_win_bindshell.py","type": "bind","type_conn": "tcp"},
+           "unix/revshell_http": {"date": "04.09.2026","description": "HTTP reverse shell","template": "src/templates/template_unix_revshell_http.py","type": "reverse","type_conn": "http"}
 }
 context = {"LHOST": "","LPORT": "","RHOST": "","RPORT": ""}
 def print_session():
@@ -51,9 +56,29 @@ def print_session():
     for sid, stype, ip, port in sessions:
         print(f"{sid:<5} {stype:<10} {ip}:{port}")
     print()
+def non_blocking_input(prompt_string):
+    try:
+        sys.stdout.write(prompt_string)
+        sys.stdout.flush()
+        buffer = ""
+        while True:
+            while not NOTIFY_QUEUE.empty():
+                try:
+                    msg = NOTIFY_QUEUE.get_nowait()
+                    sys.stdout.write(f"{msg}\n")
+                    sys.stdout.write(prompt_string)
+                    sys.stdout.flush()
+                except queue.Empty:
+                    break
+            rlist, _, _ = select([sys.stdin],[],[],0.2)
+            if rlist:
+                line = sys.stdin.readline()
+                return line.strip()
+    except KeyboardInterrupt:
+        print("\n[-] Enter 'exit' to quit.")
 while True:
     prompt = f"({current_module})lsf> " if current_module else "lsf> "
-    inp = input(prompt)
+    inp = non_blocking_input(prompt)
     if not inp:
         continue
     parts = inp.split(maxsplit=2)
@@ -68,6 +93,7 @@ while True:
             print("build\nconnect\nback")
         elif modules[current_module]["type"] == "reverse":
             print("build\nlisten\nback")
+
     elif inp == "show options":
         if not current_module:
             print("[!] Please select module")
@@ -106,6 +132,7 @@ while True:
             print(f"{var_name} > {var_value}")
         else:
             print(f"Unknown variable: {var_name}")
+
     elif command == 'build':
         if not current_module:
             print("Error: No module selected.")
@@ -121,19 +148,25 @@ while True:
     elif command == 'interact' and len(parts) > 1:
         try: 
             sid = int(parts[1])
-            interact_with_session(sid)
+            interact_with_session(sid,modules,current_module)
         except ValueError:
             print("Error: Session ID must be an integer (e.g., interact 1)")
+
     elif command == 'listen':
         if not context.get("LPORT"):
             print("Error: LPORT is not set. Use 'set LPORT <port>'")
             continue
         try:
-            port = int(context["LPORT"])
-            start_reverse_handler('0.0.0.0',port)
-            print(f"[*] Reverse TCP Handler started on 0.0.0.0:{port}")
+            if modules[current_module]["type_conn"] == "tcp":
+                port = int(context["LPORT"])
+                start_reverse_handler('0.0.0.0',port)
+                print(f"[*] Reverse TCP Handler started on 0.0.0.0:{port}")
+            elif modules[current_module]["type_conn"] == "http":
+                port = int(context["LPORT"])
+                start_http_handler('0.0.0.0',port)
         except ValueError:
             print("Error: LPORT must be a valid port number.")
+
     elif command == 'connect':
         if not context["RHOST"] or not context["RPORT"]:
             print("Error: RHOST and RPORT must be set to connect to a bind shell.")
